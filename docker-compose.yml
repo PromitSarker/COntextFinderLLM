@@ -1,0 +1,16 @@
+version: "3.9"
+
+services:
+  app:
+    build: ./
+    container_name: dilesh
+    ports:
+      - "2000:2000"
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+
+
+    volumes:
+      - ./static/documents:/app/static/documents
+      - ./chroma_db:/app/chroma_db
