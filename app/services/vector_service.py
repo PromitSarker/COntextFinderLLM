@@ -79,6 +79,21 @@ class VectorService:
         self.collection.delete(ids=ids)
         return {"chunks_deleted": len(ids), "ids": ids}
 
+    def delete_all(self) -> dict:
+        """Delete all documents and embeddings from vector database."""
+        try:
+            total_count = self.collection.count()
+            if total_count > 0:
+                # Get all IDs and delete them
+                all_data = self.collection.get(include=[])
+                all_ids = all_data.get("ids", [])
+                if all_ids:
+                    self.collection.delete(ids=all_ids)
+            return {"total_deleted": total_count}
+        except Exception as e:
+            logger.error("Delete all from vector database failed: %s", str(e), exc_info=True)
+            raise
+
     async def query(self, query_text: str, top_k: int = 5) -> dict:
         """Returns raw ChromaDB results with safety checks."""
         try:

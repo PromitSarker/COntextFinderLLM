@@ -1,6 +1,9 @@
 import os
+import shutil
+from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings, logger
 from app.services.pdf_processor import PDFProcessor
 from app.services.vector_service import VectorService
@@ -11,7 +14,7 @@ from app.services.schemas import (
     UploadResponse,
     DeleteResponse,
     DocumentMetadata,
-    QueryResultItem,  # added
+    QueryResultItem,
 )
 from app.services.gemini_service import GeminiService
 from typing import List
@@ -19,6 +22,16 @@ from app.services.document_manager import DocumentManager
 
 
 app = FastAPI(title="PDF Semantic Search API")
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Change to specific domains in production: ["http://localhost:3000", "https://yourdomain.com"]
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 document_manager = DocumentManager()
 
 # Mount static files for PDF access
@@ -93,6 +106,40 @@ async def delete_document(filename: str):
         raise HTTPException(
             status_code=500,
             detail=f"Deletion failed: {str(e)}"
+        )
+
+@app.delete("/documents/all", response_model=DeleteResponse)
+async def delete_all_documents():
+    """
+    Delete all documents and their vector embeddings
+    - Deletes all vectorized data from the vector database
+    - Deletes all files from static/documents directory
+    """
+    try:
+        # Delete all from vector database
+        vector_result = vector_service.delete_all()
+        
+        # Delete all files from static/documents directory
+        documents_dir = Path(settings.UPLOAD_DIR)
+        files_deleted = 0
+        if documents_dir.exists():
+            for file_path in documents_dir.glob("*"):
+                if file_path.is_file():
+                    try:
+                        file_path.unlink()
+                        files_deleted += 1
+                    except Exception as e:
+                        logger.warning(f"Failed to delete file {file_path}: {str(e)}")
+        
+        return DeleteResponse(
+            success=True,
+            message=f"Successfully deleted all {vector_result['total_deleted']} vector chunks and {files_deleted} physical files"
+        )
+    except Exception as e:
+        logger.error(f"Delete all failed: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Delete all failed: {str(e)}"
         )
 
 @app.post("/query", response_model=QueryResponse)

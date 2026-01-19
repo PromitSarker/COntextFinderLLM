@@ -38,7 +38,9 @@ class GeminiService:
         3. PRESERVE TECHNICAL TERMS, PART NUMBERS, AND SAFETY WARNINGS EXACTLY
         4. KEEP ALL NUMBERS AND SYMBOLS INTACT (e.g., "240V", "M-123A")
         5. MAINTAIN ORIGINAL MEANING - DO NOT SUMMARIZE OR REWRITE
-        6. OUTPUT ONLY THE CLEANED TEXT - NO ADDITIONAL COMMENTARY
+        6. REMOVE PAGE NUMBERS AND HEADER/FOOTER TEXT (e.g., "page 65 66", "| Lesson 4 |", etc.)
+        7. REMOVE NAVIGATION BREADCRUMBS AND METADATA (e.g., "| Mix Time Maps | Lesson 4 | Exercise 4 |")
+        8. OUTPUT ONLY THE CLEANED TEXT - NO ADDITIONAL COMMENTARY
         
         Original text:
         {text}
@@ -58,5 +60,4 @@ class GeminiService:
                 }
             )
         return response.text.strip()
-        
-        
+
