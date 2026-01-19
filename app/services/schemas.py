@@ -24,7 +24,8 @@ class QueryResultItem(BaseModel):
     filename: str
 
 class QueryResponse(BaseModel):
-    results: List[QueryResultItem] = []
+    results: List[QueryResultItem]
+    answer: str = None  # Add AI-generated answer field
 
 class QueryRequest(BaseModel):
     question: str

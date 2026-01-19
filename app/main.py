@@ -145,19 +145,26 @@ async def delete_all_documents():
 @app.post("/query", response_model=QueryResponse)
 async def query_documents(request: QueryRequest):
     try:
-        results = await vector_service.query(request.question, request.top_k)
+        # Normalize question by adding space-separated variant for better matching
+        normalized_question = request.question
+        # Add common compound word patterns
+        if any(term in request.question.lower() for term in ['mix', 'set', 'motor', 'control']):
+            # Create both versions for embedding search
+            normalized_question = f"{request.question} {' '.join(request.question.split())}"
+        
+        results = await vector_service.query(normalized_question, request.top_k)
         
         if not results["ids"] or len(results["ids"][0]) == 0:
-            return QueryResponse(results=[])
+            return QueryResponse(results=[], answer="Not found")
         
-        formatted_results = []
-        gemini = GeminiService() 
-
-        # Safely iterate through results
+        gemini = GeminiService()
+        
+        # Calculate similarity scores and filter by threshold
+        filtered_results = []
         for idx in range(len(results["ids"][0])):
-            # Defensive metadata access
             metadatas_list = results.get("metadatas", [[]])[0]
             documents_list = results.get("documents", [[]])[0]
+            distances_list = results.get("distances", [[]])[0]
             
             if idx >= len(metadatas_list) or idx >= len(documents_list):
                 continue
@@ -168,24 +175,55 @@ async def query_documents(request: QueryRequest):
             # Skip if critical metadata is missing
             if not all(k in metadata for k in ["page_number", "source", "filename"]):
                 continue
-                
-            raw_content = documents_list[idx] or ""
             
-            # CRITICAL: Clean text using Gemini BEFORE returning
-            cleaned_content = await gemini.clean_extracted_text(raw_content)
+            # Calculate similarity score from distance
+            distance = distances_list[idx] if idx < len(distances_list) else 1.0
+            similarity_score = 1 / (1 + distance)
             
-            formatted_results.append(QueryResultItem(
-                content=cleaned_content,  # CLEANED VERSION
-                page_number=metadata["page_number"],
-                pdf_link=f"{metadata['source']}#page={metadata['page_number']}",
-                filename=metadata["filename"]
-            ))
+            # Filter by threshold (0.7 = 70% similarity)
+            if similarity_score < 0.7:
+                continue
+            
+            # Clean text using Gemini
+            cleaned_content = await gemini.clean_extracted_text(content)
+            
+            filtered_results.append({
+                "content": cleaned_content,
+                "page_number": metadata["page_number"],
+                "pdf_link": f"{metadata['source']}#page={metadata['page_number']}",
+                "filename": metadata["filename"]
+            })
         
-        return QueryResponse(results=formatted_results)
+        # If no results pass the threshold, return "Not found" with empty results
+        if not filtered_results:
+            return QueryResponse(results=[], answer="Not found")
+        
+        # Combine context for AI answer
+        context = "\n\n".join([r['content'] for r in filtered_results[:3]])
+        
+        # Get AI-generated answer
+        answer = await gemini.answer_question(request.question, context)
+        
+        # If AI returns "Not found", return empty results
+        if answer == "Not found":
+            return QueryResponse(results=[], answer="Not found")
+        
+        # Format results for response only if answer is found
+        formatted_results = [
+            QueryResultItem(
+                content=r["content"],
+                page_number=r["page_number"],
+                pdf_link=r["pdf_link"],
+                filename=r["filename"]
+            )
+            for r in filtered_results
+        ]
+        
+        return QueryResponse(results=formatted_results, answer=answer)
         
     except Exception as e:
-            logger.error(f"Query failed: {str(e)}", exc_info=True)
-            raise HTTPException(500, f"Search failed: {str(e)}")
+        logger.error(f"Query failed: {str(e)}", exc_info=True)
+        raise HTTPException(500, f"Search failed: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

@@ -108,3 +108,34 @@ class VectorService:
         except Exception as e:
             logger.error("Vector query failed: %s", str(e), exc_info=True)
             return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+
+    async def search_similar(self, query: str, threshold: float = 0.7, top_k: int = 3) -> List[Dict]:
+        """
+        Search with minimum similarity threshold
+        Returns empty list if no results meet threshold
+        """
+        results = await self.query(query, top_k=top_k)
+        
+        if not results["ids"] or len(results["ids"][0]) == 0:
+            return []
+        
+        # Calculate similarity scores and filter
+        filtered_results = []
+        for idx in range(len(results["ids"][0])):
+            # Similarity score from distance (lower distance = higher similarity)
+            distance = results.get("distances", [[]])[0][idx] if results.get("distances") else 1.0
+            similarity_score = 1 / (1 + distance)  # Convert distance to similarity
+            
+            if similarity_score < threshold:
+                continue
+            
+            metadata = results.get("metadatas", [[]])[0][idx] or {}
+            content = results.get("documents", [[]])[0][idx] or ""
+            
+            filtered_results.append({
+                "text": content,
+                "similarity_score": similarity_score,
+                "metadata": metadata
+            })
+        
+        return filtered_results

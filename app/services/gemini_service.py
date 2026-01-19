@@ -60,4 +60,48 @@ class GeminiService:
                 }
             )
         return response.text.strip()
+    
+    async def answer_question(self, question: str, retrieved_context: str) -> str:
+        """
+        Answer questions ONLY based on retrieved context
+        """
+        if not retrieved_context.strip():
+            return "Not found"
+        
+        prompt = f"""
+        You are a helpful assistant that answers questions STRICTLY based on the provided context.
+        
+        CRITICAL RULES:
+        1. ONLY use information from the context below to answer
+        2. If the context doesn't contain relevant information, respond EXACTLY with: "Not found"
+        3. DO NOT use your general knowledge or training data
+        4. DO NOT make assumptions or inferences beyond the context
+        5. If you're uncertain whether the context addresses the question, say "Not found"
+        6. HANDLE SPACING VARIATIONS: Treat compound words with and without spaces as equivalent
+           Examples: "mixmanufacture" = "mix manufacture", "setpoint" = "set point", "motorcontrol" = "motor control"
+        7. BE FLEXIBLE with word boundaries in technical terms while matching against context
+        
+        Context:
+        {retrieved_context}
+        
+        Question: {question}
+        
+        Answer (or "Not found" if context is irrelevant):
+        """
+        
+        response = await self.generation_model.generate_content_async(
+            prompt,
+            generation_config={
+                "temperature": 0.1,  # Low temperature for consistency
+                "max_output_tokens": 500,
+            }
+        )
+        
+        answer = response.text.strip()
+        
+        # Additional safety check
+        if "not found" in answer.lower() or "no information" in answer.lower():
+            return "Not found"
+        
+        return answer
 
