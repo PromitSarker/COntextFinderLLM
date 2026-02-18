@@ -1,16 +1,22 @@
-version: "3.9"
+version: "3.8"
 
 services:
-  app:
-    build: ./
+  dilesh:
+    build: .
     container_name: dilesh
     ports:
       - "2000:2000"
+    volumes:
+      - chroma_data:/app/chroma_db # named volume - Docker manages permissions
+      - ./static:/app/static
+      - ./app:/app/app
     environment:
-      - PYTHONUNBUFFERED=1
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - VECTOR_DB_PATH=/app/chroma_db
+      - UPLOAD_DIR=/app/static/documents
+    user: "0:0"
     restart: unless-stopped
 
-
-    volumes:
-      - ./static/documents:/app/static/documents
-      - ./chroma_db:/app/chroma_db
+volumes:
+  chroma_data:
+    driver: local

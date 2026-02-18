@@ -1,24 +1,41 @@
 import os
-import shutil
 from pathlib import Path
 from app.core.config import settings
 
-def save_pdf(file_data: bytes, filename: str) -> str:
-    """Save PDF to static directory and return relative path"""
-    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
-    safe_filename = filename.replace(" ", "_").lower()
-    file_path = os.path.join(settings.UPLOAD_DIR, safe_filename)
+ALLOWED_EXTENSIONS = {'.pdf', '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp'}
+
+def save_file(file_content: bytes, filename: str) -> str:
+    """Save uploaded file (PDF or image) to static directory"""
+    file_path = Path(settings.UPLOAD_DIR) / filename
+    file_path.parent.mkdir(parents=True, exist_ok=True)
     
     with open(file_path, "wb") as f:
-        f.write(file_data)
+        f.write(file_content)
     
-    # Use settings.UPLOAD_DIR so return stays accurate if config changes
-    return f"/{settings.UPLOAD_DIR}/{safe_filename}"
+    # Return relative path for serving
+    return f"static/documents/{filename}"
+
+def save_pdf(file_content: bytes, filename: str) -> str:
+    """Backward compatibility - saves PDF"""
+    return save_file(file_content, filename)
 
 def delete_pdf(filename: str) -> bool:
-    """Delete PDF file from storage"""
-    file_path = Path(settings.UPLOAD_DIR) / filename.replace(" ", "_").lower()
+    """Delete a file from static directory"""
+    file_path = Path(settings.UPLOAD_DIR) / filename
     if file_path.exists():
-        os.remove(file_path)
+        file_path.unlink()
         return True
     return False
+
+def is_allowed_file(filename: str) -> bool:
+    """Check if file extension is allowed"""
+    return Path(filename).suffix.lower() in ALLOWED_EXTENSIONS
+
+def is_image(filename: str) -> bool:
+    """Check if file is an image"""
+    image_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp'}
+    return Path(filename).suffix.lower() in image_extensions
+
+def is_pdf(filename: str) -> bool:
+    """Check if file is a PDF"""
+    return Path(filename).suffix.lower() == '.pdf'

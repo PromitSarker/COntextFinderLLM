@@ -9,12 +9,12 @@ class GeminiService:
         self.embedding_model = "gemini-embedding-001"
         self.generation_model = genai.GenerativeModel('gemini-2.5-flash-lite')
     
-    async def get_embeddings(self, texts: List[str]) -> List[List[float]]:
+    async def get_embeddings(self, texts: List[str], task_type: str = "retrieval_document") -> List[List[float]]:
         """Generate embeddings for multiple texts"""
         result = genai.embed_content(
             model=self.embedding_model,
             content=texts,
-            task_type="retrieval_document"
+            task_type=task_type
         )
         return result['embedding']
     
@@ -38,40 +38,35 @@ class GeminiService:
             return ""
             
         prompt = f"""
-        You are a technical document processor. Clean this text extracted from a service manual.
-        
-        CRITICAL RULES FOR JUNK DETECTION:
-        1. Return "JUNK" if text contains excessive repetition (same words/patterns repeated 5+ times)
-        2. Return "JUNK" if text is mostly table fragments, data dumps, or garbled charts (e.g., "Flow % 100 Flow % 100 Flow %")
-        3. Return "JUNK" if text contains primarily random variable names without explanation (e.g., "A0010 A0020 A0030")
-        4. Return "JUNK" if text is just numbers/codes without readable sentences (e.g., "Day>10 <60 Sum DemandItem")
-        5. Return "JUNK" if alphanumeric ratio suggests corrupted data
-        
+        You are a technical document processor. Clean this text extracted from a document.
+
+        JUNK DETECTION — Return exactly "JUNK" if ANY of these apply:
+        1. Excessive repetition (same words/patterns repeated 5+ times)
+        2. Mostly table fragments, data dumps, or garbled charts
+        3. Primarily random variable names without explanation (e.g., "A0010 A0020 A0030")
+        4. Just numbers/codes without readable sentences
+        5. Alphanumeric ratio suggests corrupted data
+
         CLEANING RULES (only if text passes junk detection):
-        6. Remove ASCII table representations (lines with "|", "-------", "X X X" patterns)
-        7. Remove table formatting characters like pipes (|), dashes (---), alignment spaces
-        8. Keep ONLY the explanatory text BEFORE and AFTER tables
-        9. Remove random spaces within words (e.g., "d r e a m s" -> "dreams")
-        10. Fix hyphenated words split at line breaks (e.g., "WARN-\nING" -> "WARNING")
-        11. Preserve technical terms, part numbers, and safety warnings exactly
-        12. Keep all numbers and symbols intact in meaningful context (e.g., "240V", "M-123A")
-        13. Remove page numbers, headers/footers, navigation breadcrumbs
-        14. Remove lines that are just column headers (e.g., "Products | Process1 | Process2")
-        
-        VALID TEXT must contain:
-        - Complete sentences with subjects and verbs
-        - Explanatory content, not just data listings
-        - Coherent paragraphs about procedures, specifications, or instructions
-        
-        EXAMPLE:
-        Input: "A product matrix shows products. Products | P1 | P2\n----|---|---\nSet1| X | X\n\nThis is useful."
-        Output: "A product matrix shows products. This is useful."
-        
-        OUTPUT: Only cleaned text OR "JUNK" - NO commentary, NO table formatting
-        
+        6. Remove ALL newline artifacts — replace \\n, \\r, \\\\n with a single space
+        7. Remove ASCII tables (lines with "|", "---", "===", "X X X" patterns)
+        8. Remove page numbers (e.g., "Page 1 of 5", "- 3 -", standalone numbers on a line)
+        9. Remove headers and footers (e.g., website URLs, copyright lines, document titles repeated at top/bottom)
+        10. Remove navigation breadcrumbs (e.g., "Home > Support > Install")
+        11. Remove random spaces within words (e.g., "d r e a m s" -> "dreams")
+        12. Fix hyphenated words split across lines (e.g., "WARN-\nING" -> "WARNING")
+        13. Preserve technical terms, part numbers, and safety warnings exactly
+        14. Join all remaining text into clean flowing paragraphs with single spaces between sentences
+        15. Do NOT add any commentary, headings, or bullet points that weren't in the original
+
+        OUTPUT FORMAT:
+        - One or more clean paragraphs of plain text
+        - No bullet symbols, no markdown, no newlines in output
+        - Or exactly "JUNK" if the text fails junk detection
+
         Original text:
         {text}
-        
+
         OUTPUT:
         """
         
