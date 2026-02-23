@@ -10,24 +10,35 @@ class DocumentManager:
     def __init__(self):
         self.collection = get_collection()
     
-    def get_document_source(self, filename: str) -> str:
-        """Get normalized source path matching upload logic"""
-        # Use SAME normalization as in main.py upload endpoint
-        safe_filename = filename.replace(" ", "_").lower()
-        return f"/static/documents/{Path(safe_filename).name}"
-    
     def delete_document(self, filename: str) -> dict:
         """Atomic document deletion with verification"""
-        source_path = self.get_document_source(filename)
-        
-        # 1. Verify document exists in vector DB
+        # 1. Verify document exists in vector DB — try exact filename match first,
+        #    then fall back to stem match in case the caller omitted the extension.
         existing = self.collection.get(
-            where={"source": source_path},
+            where={"filename": filename},
             include=["metadatas"]
         )
-        
+
+        actual_filename = filename
         if not existing["ids"]:
-            raise ValueError(f"Document not found in vector database: {filename}")
+            # Try matching by stem (e.g. "systemreq" → "systemreq.png")
+            query_stem = Path(filename).stem
+            all_docs = self.collection.get(include=["metadatas"])
+            matched_filename = None
+            for meta in (all_docs.get("metadatas") or []):
+                stored = (meta or {}).get("filename", "")
+                if stored and Path(stored).stem == query_stem:
+                    matched_filename = stored
+                    break
+
+            if not matched_filename:
+                raise ValueError(f"Document not found in vector database: {filename}")
+
+            existing = self.collection.get(
+                where={"filename": matched_filename},
+                include=["metadatas"]
+            )
+            actual_filename = matched_filename
         
         # 2. Delete from vector DB FIRST
         try:
@@ -37,7 +48,7 @@ class DocumentManager:
         
         # 3. Verify deletion succeeded
         verification = self.collection.get(
-            where={"source": source_path},
+            where={"filename": actual_filename},
             include=[]
         )
         if verification["ids"]:
@@ -46,16 +57,15 @@ class DocumentManager:
             )
         
         # 4. Delete physical file
-        file_deleted = delete_pdf(filename)
+        file_deleted = delete_pdf(actual_filename)
         if not file_deleted:
             logger.warning(
-                f"Physical file deletion failed for {filename}, "
+                f"Physical file deletion failed for {actual_filename}, "
                 f"but vector database entries were cleaned"
             )
         
         return {
             "chunks_deleted": len(existing["ids"]),
             "file_deleted": file_deleted,
-            "source_path": source_path,
-            "filename": filename
+            "filename": actual_filename
         }
