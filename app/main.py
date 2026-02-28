@@ -43,7 +43,7 @@ app.add_middleware(
 document_manager = DocumentManager()
 
 # Mount static files for PDF access
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory=str(Path(__file__).parent.parent / "static")), name="static")
 
 pdf_processor = PDFProcessor()
 image_processor = ImageProcessor()
@@ -69,7 +69,34 @@ async def list_categories():
         raise HTTPException(500, f"Failed to list categories: {str(e)}")
 
 
-@app.post("/upload", response_model=List[UploadResponse])
+@app.post(
+    "/upload",
+    response_model=List[UploadResponse],
+    openapi_extra={
+        "requestBody": {
+            "content": {
+                "multipart/form-data": {
+                    "schema": {
+                        "type": "object",
+                        "required": ["files"],
+                        "properties": {
+                            "files": {
+                                "type": "array",
+                                "items": {"type": "string", "format": "binary"},
+                                "description": "Upload PDF, image, DOCX, PPTX, XLSX, TXT, CSV, and more",
+                            },
+                            "categories": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "One or more document categories",
+                            },
+                        },
+                    }
+                }
+            }
+        }
+    },
+)
 async def upload_files(
     files: List[UploadFile] = File(..., description="Upload PDF, image, DOCX, PPTX, XLSX, TXT, CSV, and more"),
     categories: List[str] = Form([DocumentCategory.DEFAULT.value], description="One or more document categories")
@@ -210,22 +237,13 @@ async def upload_files(
 @app.post("/upload/url", response_model=UploadResponse)
 async def upload_url(
     url: str = Query(..., description="Website URL to ingest (e.g., https://example.com)"),
-    categories: List[str] = Query([DocumentCategory.DEFAULT.value], description="One or more document categories")
+    category: str = Query(DocumentCategory.DEFAULT.value, description="Category for this content")
 ):
     """
     Takes a snapshot of a URL, uses AI to extract text/images from the screenshot,
     and indexes it into the search database.
     """
     try:
-        # Validate categories
-        valid_category_names = {c.value for c in DocumentCategory}
-        invalid = [c for c in categories if c not in valid_category_names]
-        if invalid:
-            raise HTTPException(
-                400,
-                f"Invalid categories: {invalid}. Valid options: {sorted(valid_category_names)}"
-            )
-        category_values = list(set(categories))
         # 1. Take Screenshot
         # Ensure temp dir exists
         Path("./static/temp").mkdir(parents=True, exist_ok=True)
@@ -269,12 +287,12 @@ async def upload_url(
             documents.append({
                 "content": chunk,
                 "metadata": {
-                    "filename": screenshot_filename,
+                    "filename": f"URL_{url[:30]}",
                     "source": url,
                     "page_number": 1,
                     "chunk_index": i,
                     "file_type": "web_url",
-                    "categories": category_values
+                    "categories": [category]
                 }
             })
             
@@ -282,13 +300,13 @@ async def upload_url(
             raise HTTPException(400, "No content extracted from URL")
 
         # 5. Add to Vector DB
-        doc_ids = await vector_service.add_documents(documents, categories=category_values)
+        doc_ids = await vector_service.add_documents(documents, categories=[category])
         
         return UploadResponse(
             document_id=doc_ids[0].split("_")[0] if doc_ids else None,
             filename=url,
             chunks_created=len(documents),
-            categories=category_values
+            categories=[category]
         )
 
     except Exception as e:
@@ -308,12 +326,9 @@ async def query_documents(request: QueryRequest):
         
         normalized_question = request.question
         
-        # Fetch more results than requested since we'll deduplicate to 1 per file
-        fetch_k = max(request.top_k * 5, 20)
-        
         results = await vector_service.query(
             normalized_question, 
-            fetch_k,
+            request.top_k,
             categories=query_categories
         )
         
@@ -321,8 +336,8 @@ async def query_documents(request: QueryRequest):
             cat_msg = f" in categories {query_categories}" if query_categories else ""
             return QueryResponse(results=[], answer=f"No search results found{cat_msg}")
         
-        # Track the best (highest similarity) result per source file
-        best_per_file = {}  # filename -> {"score": float, "result": dict}
+        filtered_results = []
+        seen_contents = []
 
         for idx in range(len(results["ids"][0])):
             metadatas_list = results.get("metadatas", [[]])[0]
@@ -347,40 +362,54 @@ async def query_documents(request: QueryRequest):
             if similarity_score < 0.65:
                 continue
             
-            # Use filename as the dedup key — one result per file
-            file_key = metadata["filename"]
-            
-            # Only process this chunk if it's the best score for this file
-            if file_key in best_per_file and best_per_file[file_key]["score"] >= similarity_score:
-                continue
-            
             cleaned_content = await gemini.clean_extracted_text(content)
 
             if not cleaned_content or not cleaned_content.strip():
                 continue
 
             cleaned_content = " ".join(cleaned_content.split())
+
+            cleaned_lower = cleaned_content.lower()
+            is_duplicate = False
+            for seen in seen_contents:
+                shorter, longer = sorted([cleaned_lower, seen], key=len)
+                if shorter in longer:
+                    is_duplicate = True
+                    break
+                seen_words = set(seen.split())
+                current_words = set(cleaned_lower.split())
+                if len(seen_words) > 0 and len(current_words) > 0:
+                    overlap = len(seen_words & current_words) / min(len(seen_words), len(current_words))
+                    if overlap > 0.85:
+                        is_duplicate = True
+                        break
+            if is_duplicate:
+                continue
+            seen_contents.append(cleaned_lower)
             
             doc_categories = metadata.get("categories", [metadata.get("category", "default")])
             if isinstance(doc_categories, str):
                 doc_categories = [doc_categories]
             
-            best_per_file[file_key] = {
-                "score": similarity_score,
-                "result": {
-                    "content": cleaned_content,
-                    "page_number": metadata.get("page_number", 0),
-                    "pdf_link": f"{metadata['source']}#page={metadata.get('page_number', 1)}&context={','.join(doc_categories)}",
-                    "filename": metadata["filename"],
-                    "categories": doc_categories
-                }
-            }
-        
-        # Sort by similarity score (best first) and limit to top_k
-        filtered_results = [
-            entry["result"] 
-            for entry in sorted(best_per_file.values(), key=lambda x: x["score"], reverse=True)
-        ][:request.top_k]
+            primary_category = doc_categories[0] if doc_categories else "default"
+            raw_source = metadata["source"]
+            if raw_source.startswith("/app/"):
+                url_source = raw_source[len("/app/"):]
+            elif raw_source.startswith("/"):
+                url_source = raw_source.lstrip("/")
+            else:
+                url_source = raw_source
+
+            # Ensure no leading slash that could cause double-slash
+            url_source = url_source.lstrip("/")
+
+            filtered_results.append({
+                "content": cleaned_content,
+                "page_number": metadata.get("page_number", 0),
+                "pdf_link": f"static/documents/{Path(metadata['filename']).name}?context={primary_category}#page={metadata.get('page_number', 1)}",
+                "filename": metadata["filename"],
+                "categories": doc_categories
+            })
         
         if not filtered_results:
             return QueryResponse(results=[], answer="No relevant results found")
@@ -415,13 +444,6 @@ async def delete_document(filename: str):
     try:
         result = document_manager.delete_document(filename)
         
-        # Also try deleting from static/temp (for URL screenshots)
-        temp_file = Path("./static/temp") / filename
-        if temp_file.exists():
-            temp_file.unlink()
-            result['file_deleted'] = True
-            logger.info(f"Deleted temp screenshot: {temp_file}")
-
         return DeleteResponse(
             success=True,
             message=(
@@ -448,14 +470,9 @@ async def delete_documents_by_category(category: DocumentCategory):
         files_deleted = 0
         for filename in result.get("filenames", []):
             try:
-                # Try upload dir first, then temp dir
                 file_path = Path(settings.UPLOAD_DIR) / filename
-                temp_path = Path("./static/temp") / filename
                 if file_path.exists():
                     file_path.unlink()
-                    files_deleted += 1
-                elif temp_path.exists():
-                    temp_path.unlink()
                     files_deleted += 1
             except Exception as e:
                 logger.warning(f"Failed to delete file {filename}: {str(e)}")
@@ -476,38 +493,28 @@ async def delete_documents_by_category(category: DocumentCategory):
 async def delete_all_documents():
     """Delete all documents and their vector embeddings"""
     try:
-        # Delete all vector embeddings from the collection
         vector_result = vector_service.delete_all()
 
-        # Delete physical files
-        documents_dir = Path(settings.UPLOAD_DIR)
         files_deleted = 0
-        if documents_dir.exists():
-            for file_path in documents_dir.glob("*"):
-                if file_path.is_file():
-                    try:
-                        file_path.unlink()
-                        files_deleted += 1
-                    except Exception as e:
-                        logger.warning(f"Failed to delete file {file_path}: {str(e)}")
+        dirs_to_clean = [
+            Path(settings.UPLOAD_DIR),
+            Path(settings.UPLOAD_DIR).parent / "temp",
+        ]
+        for target_dir in dirs_to_clean:
+            if target_dir.exists():
+                for file_path in target_dir.glob("*"):
+                    if file_path.is_file():
+                        try:
+                            file_path.unlink()
+                            files_deleted += 1
+                        except Exception as e:
+                            logger.warning(f"Failed to delete file {file_path}: {str(e)}")
 
-        # Clean up temp screenshotted URLs
-        temp_dir = Path("./static/temp")
-        temp_files_deleted = 0
-        if temp_dir.exists():
-            for file_path in temp_dir.glob("*"):
-                if file_path.is_file():
-                    try:
-                        file_path.unlink()
-                        temp_files_deleted += 1
-                    except Exception as e:
-                        logger.warning(f"Failed to delete temp file {file_path}: {str(e)}")
-
-        logger.info(f"Deleted all {vector_result['total_deleted']} chunks, {files_deleted} files, and {temp_files_deleted} temp screenshots")
+        logger.info(f"Deleted all {vector_result['total_deleted']} chunks and {files_deleted} files")
 
         return DeleteResponse(
             success=True,
-            message=f"Successfully deleted all {vector_result['total_deleted']} vector chunks, {files_deleted} physical files, and {temp_files_deleted} temp screenshots"
+            message=f"Successfully deleted all {vector_result['total_deleted']} vector chunks and {files_deleted} physical files"
         )
     except Exception as e:
         logger.error(f"Delete all failed: {str(e)}", exc_info=True)
