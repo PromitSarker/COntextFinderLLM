@@ -152,7 +152,8 @@ class VectorService:
             
             return {
                 "chunks_deleted": len(results["ids"]),
-                "filenames": filenames
+                "filenames": filenames,
+                "metadatas": results.get("metadatas", [])
             }
         except Exception as e:
             logger.error(f"Delete by category failed: {str(e)}")

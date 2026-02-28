@@ -210,13 +210,22 @@ async def upload_files(
 @app.post("/upload/url", response_model=UploadResponse)
 async def upload_url(
     url: str = Query(..., description="Website URL to ingest (e.g., https://example.com)"),
-    category: str = Query(DocumentCategory.DEFAULT.value, description="Category for this content")
+    categories: List[str] = Query([DocumentCategory.DEFAULT.value], description="One or more document categories")
 ):
     """
     Takes a snapshot of a URL, uses AI to extract text/images from the screenshot,
     and indexes it into the search database.
     """
     try:
+        # Validate categories
+        valid_category_names = {c.value for c in DocumentCategory}
+        invalid = [c for c in categories if c not in valid_category_names]
+        if invalid:
+            raise HTTPException(
+                400,
+                f"Invalid categories: {invalid}. Valid options: {sorted(valid_category_names)}"
+            )
+        category_values = list(set(categories))
         # 1. Take Screenshot
         # Ensure temp dir exists
         Path("./static/temp").mkdir(parents=True, exist_ok=True)
@@ -260,12 +269,12 @@ async def upload_url(
             documents.append({
                 "content": chunk,
                 "metadata": {
-                    "filename": f"URL_{url[:30]}",
+                    "filename": screenshot_filename,
                     "source": url,
                     "page_number": 1,
                     "chunk_index": i,
                     "file_type": "web_url",
-                    "categories": [category]
+                    "categories": category_values
                 }
             })
             
@@ -273,13 +282,13 @@ async def upload_url(
             raise HTTPException(400, "No content extracted from URL")
 
         # 5. Add to Vector DB
-        doc_ids = await vector_service.add_documents(documents, categories=[category])
+        doc_ids = await vector_service.add_documents(documents, categories=category_values)
         
         return UploadResponse(
             document_id=doc_ids[0].split("_")[0] if doc_ids else None,
             filename=url,
             chunks_created=len(documents),
-            categories=[category]
+            categories=category_values
         )
 
     except Exception as e:
@@ -361,7 +370,7 @@ async def query_documents(request: QueryRequest):
                 "result": {
                     "content": cleaned_content,
                     "page_number": metadata.get("page_number", 0),
-                    "pdf_link": f"{metadata['source']}#page={metadata.get('page_number', 1)}",
+                    "pdf_link": f"{metadata['source']}#page={metadata.get('page_number', 1)}&context={','.join(doc_categories)}",
                     "filename": metadata["filename"],
                     "categories": doc_categories
                 }
@@ -406,6 +415,13 @@ async def delete_document(filename: str):
     try:
         result = document_manager.delete_document(filename)
         
+        # Also try deleting from static/temp (for URL screenshots)
+        temp_file = Path("./static/temp") / filename
+        if temp_file.exists():
+            temp_file.unlink()
+            result['file_deleted'] = True
+            logger.info(f"Deleted temp screenshot: {temp_file}")
+
         return DeleteResponse(
             success=True,
             message=(
@@ -432,9 +448,14 @@ async def delete_documents_by_category(category: DocumentCategory):
         files_deleted = 0
         for filename in result.get("filenames", []):
             try:
+                # Try upload dir first, then temp dir
                 file_path = Path(settings.UPLOAD_DIR) / filename
+                temp_path = Path("./static/temp") / filename
                 if file_path.exists():
                     file_path.unlink()
+                    files_deleted += 1
+                elif temp_path.exists():
+                    temp_path.unlink()
                     files_deleted += 1
             except Exception as e:
                 logger.warning(f"Failed to delete file {filename}: {str(e)}")
@@ -455,8 +476,10 @@ async def delete_documents_by_category(category: DocumentCategory):
 async def delete_all_documents():
     """Delete all documents and their vector embeddings"""
     try:
+        # Delete all vector embeddings from the collection
         vector_result = vector_service.delete_all()
 
+        # Delete physical files
         documents_dir = Path(settings.UPLOAD_DIR)
         files_deleted = 0
         if documents_dir.exists():
@@ -468,11 +491,23 @@ async def delete_all_documents():
                     except Exception as e:
                         logger.warning(f"Failed to delete file {file_path}: {str(e)}")
 
-        logger.info(f"Deleted all {vector_result['total_deleted']} chunks and {files_deleted} files")
+        # Clean up temp screenshotted URLs
+        temp_dir = Path("./static/temp")
+        temp_files_deleted = 0
+        if temp_dir.exists():
+            for file_path in temp_dir.glob("*"):
+                if file_path.is_file():
+                    try:
+                        file_path.unlink()
+                        temp_files_deleted += 1
+                    except Exception as e:
+                        logger.warning(f"Failed to delete temp file {file_path}: {str(e)}")
+
+        logger.info(f"Deleted all {vector_result['total_deleted']} chunks, {files_deleted} files, and {temp_files_deleted} temp screenshots")
 
         return DeleteResponse(
             success=True,
-            message=f"Successfully deleted all {vector_result['total_deleted']} vector chunks and {files_deleted} physical files"
+            message=f"Successfully deleted all {vector_result['total_deleted']} vector chunks, {files_deleted} physical files, and {temp_files_deleted} temp screenshots"
         )
     except Exception as e:
         logger.error(f"Delete all failed: {str(e)}", exc_info=True)
