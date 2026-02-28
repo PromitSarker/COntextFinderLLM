@@ -1,4 +1,5 @@
 import re
+import json
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Form
 from fastapi.staticfiles import StaticFiles
@@ -6,8 +7,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings, logger
 from app.services.pdf_processor import PDFProcessor
 from app.services.image_processor import ImageProcessor
+from app.services.document_processor import DocumentProcessor
 from app.services.vector_service import VectorService
-from app.services.file_manager import save_file, delete_pdf, is_allowed_file, is_image, is_pdf
+from app.services.file_manager import (
+    save_file, delete_pdf, is_allowed_file, is_image, is_pdf,
+    is_text, is_docx, is_xlsx, is_pptx
+)
 from app.services.schemas import (
     QueryRequest,
     QueryResponse,
@@ -21,6 +26,7 @@ from app.services.gemini_service import GeminiService
 from typing import List, Optional
 from app.services.document_manager import DocumentManager
 import uvicorn
+from html2image import Html2Image
 
 
 app = FastAPI(title="PDF Semantic Search API")
@@ -41,6 +47,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 pdf_processor = PDFProcessor()
 image_processor = ImageProcessor()
+document_processor = DocumentProcessor()
 vector_service = VectorService()
 
 
@@ -64,16 +71,38 @@ async def list_categories():
 
 @app.post("/upload", response_model=List[UploadResponse])
 async def upload_files(
-    files: List[UploadFile] = File(...),
-    categories: List[DocumentCategory] = Form([DocumentCategory.DEFAULT])
+    files: List[UploadFile] = File(..., description="Upload PDF, image, DOCX, PPTX, XLSX, TXT, CSV, and more"),
+    categories: List[str] = Form([DocumentCategory.DEFAULT.value], description="One or more document categories")
 ):
-    """Upload multiple PDFs or Images with category assignments"""
+    """Upload multiple files (PDF, images, DOCX, PPTX, XLSX, TXT, CSV, MD, JSON, etc.) with multiple category assignments"""
     if not files:
         raise HTTPException(400, "No files provided")
     
-    # Convert enum categories to values
-    category_values = [cat.value if isinstance(cat, DocumentCategory) else cat for cat in categories]
-    category_values = list(set(category_values))  # Remove duplicates
+    # Normalize categories: handle JSON-encoded strings, comma-separated values, etc.
+    raw_categories = []
+    for cat in categories:
+        if cat.startswith("["):
+            try:
+                parsed = json.loads(cat)
+                if isinstance(parsed, list):
+                    raw_categories.extend(str(c) for c in parsed)
+                    continue
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if "," in cat:
+            raw_categories.extend(c.strip() for c in cat.split(",") if c.strip())
+        else:
+            raw_categories.append(cat.strip())
+    
+    valid_category_names = {c.value for c in DocumentCategory}
+    invalid = [c for c in raw_categories if c not in valid_category_names]
+    if invalid:
+        raise HTTPException(
+            400,
+            f"Invalid categories: {invalid}. Valid options: {sorted(valid_category_names)}"
+        )
+    
+    category_values = list(set(raw_categories)) if raw_categories else [DocumentCategory.DEFAULT.value]
     
     results = []
     
@@ -91,6 +120,7 @@ async def upload_files(
             
             file_content = await file.read()
             file_path = save_file(file_content, file.filename)
+            documents = []
 
             # Process based on file type
             if is_pdf(file.filename):
@@ -106,6 +136,31 @@ async def upload_files(
                 documents = image_processor.process_image_with_metadata(file_content, file.filename)
                 for doc in documents:
                     doc["metadata"]["categories"] = category_values
+
+            elif is_docx(file.filename):
+                documents = document_processor.process_docx(file_content, file.filename)
+                for doc in documents:
+                    doc["metadata"]["source"] = file_path
+                    doc["metadata"]["categories"] = category_values
+
+            elif is_pptx(file.filename):
+                documents = document_processor.process_pptx(file_content, file.filename)
+                for doc in documents:
+                    doc["metadata"]["source"] = file_path
+                    doc["metadata"]["categories"] = category_values
+
+            elif is_xlsx(file.filename):
+                documents = document_processor.process_xlsx(file_content, file.filename)
+                for doc in documents:
+                    doc["metadata"]["source"] = file_path
+                    doc["metadata"]["categories"] = category_values
+
+            elif is_text(file.filename):
+                documents = document_processor.process_text_file(file_content, file.filename)
+                for doc in documents:
+                    doc["metadata"]["source"] = file_path
+                    doc["metadata"]["categories"] = category_values
+
             else:
                 results.append(UploadResponse(
                     document_id=None,
@@ -130,8 +185,8 @@ async def upload_files(
             doc_ids = await vector_service.add_documents(valid_documents, categories=category_values)
             first_doc_id = doc_ids[0] if doc_ids else None
             
-            file_type = "PDF" if is_pdf(file.filename) else "Image"
-            logger.info(f"Uploaded {file_type} {file.filename} to categories {category_values} with {len(doc_ids)} chunks")
+            ext = Path(file.filename).suffix.lower()
+            logger.info(f"Uploaded {ext} file {file.filename} to categories {category_values} with {len(doc_ids)} chunks")
             
             results.append(UploadResponse(
                 document_id=first_doc_id.split("_")[0] if first_doc_id else None,
@@ -150,6 +205,86 @@ async def upload_files(
             ))
     
     return results
+
+
+@app.post("/upload/url", response_model=UploadResponse)
+async def upload_url(
+    url: str = Query(..., description="Website URL to ingest (e.g., https://example.com)"),
+    category: str = Query(DocumentCategory.DEFAULT.value, description="Category for this content")
+):
+    """
+    Takes a snapshot of a URL, uses AI to extract text/images from the screenshot,
+    and indexes it into the search database.
+    """
+    try:
+        # 1. Take Screenshot
+        # Ensure temp dir exists
+        Path("./static/temp").mkdir(parents=True, exist_ok=True)
+        hti = Html2Image(
+            output_path="./static/temp",
+            custom_flags=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"]
+        )
+        
+        screenshot_filename = f"web_{url.replace('://', '_').replace('/', '_')[:50]}.png"
+        
+        # This captures the screenshot and saves it to ./static/temp/screenshot_filename
+        hti.screenshot(url=url, save_as=screenshot_filename, size=(1280, 1600))
+        
+        file_path = Path(f"./static/temp/{screenshot_filename}")
+        
+        if not file_path.exists():
+            raise HTTPException(400, "Failed to capture website screenshot")
+            
+        with open(file_path, 'rb') as f:
+            image_bytes = f.read()
+
+        # 2. Analyze with Gemini
+        logger.info(f"Analyzing screenshot for {url}...")
+        extracted_content = await GeminiService().analyze_webpage_screenshot(image_bytes)
+        
+        if not extracted_content or extracted_content.startswith("Error analyzing screenshot:"):
+            raise HTTPException(500, f"AI failed to read website: {extracted_content}")
+
+        # 3. Clean up the temp image (optional, or keep it for reference)
+        # file_path.unlink() 
+
+        # 4. Chunk and Store (Treat it like a text file now)
+        from app.services.document_processor import DocumentProcessor
+        doc_processor = DocumentProcessor()
+        
+        # Re-use the text splitter
+        chunks = doc_processor._split_text(extracted_content, chunk_size=1000, overlap=200)
+        
+        documents = []
+        for i, chunk in enumerate(chunks):
+            documents.append({
+                "content": chunk,
+                "metadata": {
+                    "filename": f"URL_{url[:30]}",
+                    "source": url,
+                    "page_number": 1,
+                    "chunk_index": i,
+                    "file_type": "web_url",
+                    "categories": [category]
+                }
+            })
+            
+        if not documents:
+            raise HTTPException(400, "No content extracted from URL")
+
+        # 5. Add to Vector DB
+        doc_ids = await vector_service.add_documents(documents, categories=[category])
+        
+        return UploadResponse(
+            document_id=doc_ids[0].split("_")[0] if doc_ids else None,
+            filename=url,
+            chunks_created=len(documents),
+            categories=[category]
+        )
+
+    except Exception as e:
+        logger.error(f"URL ingestion failed: {str(e)}")
+        raise HTTPException(500, f"Failed to ingest URL: {str(e)}")
 
 
 @app.post("/query", response_model=QueryResponse)
@@ -175,6 +310,8 @@ async def query_documents(request: QueryRequest):
             return QueryResponse(results=[], answer=f"No search results found{cat_msg}")
         
         filtered_results = []
+        seen_contents = []
+
         for idx in range(len(results["ids"][0])):
             metadatas_list = results.get("metadatas", [[]])[0]
             documents_list = results.get("documents", [[]])[0]
@@ -203,10 +340,26 @@ async def query_documents(request: QueryRequest):
             if not cleaned_content or not cleaned_content.strip():
                 continue
 
-            # Strip any remaining newlines/extra whitespace the model may have left
             cleaned_content = " ".join(cleaned_content.split())
+
+            cleaned_lower = cleaned_content.lower()
+            is_duplicate = False
+            for seen in seen_contents:
+                shorter, longer = sorted([cleaned_lower, seen], key=len)
+                if shorter in longer:
+                    is_duplicate = True
+                    break
+                seen_words = set(seen.split())
+                current_words = set(cleaned_lower.split())
+                if len(seen_words) > 0 and len(current_words) > 0:
+                    overlap = len(seen_words & current_words) / min(len(seen_words), len(current_words))
+                    if overlap > 0.85:
+                        is_duplicate = True
+                        break
+            if is_duplicate:
+                continue
+            seen_contents.append(cleaned_lower)
             
-            # Handle both old single category and new multiple categories
             doc_categories = metadata.get("categories", [metadata.get("category", "default")])
             if isinstance(doc_categories, str):
                 doc_categories = [doc_categories]
@@ -301,10 +454,8 @@ async def delete_documents_by_category(category: DocumentCategory):
 async def delete_all_documents():
     """Delete all documents and their vector embeddings"""
     try:
-        # Delete all vector embeddings from the collection
         vector_result = vector_service.delete_all()
 
-        # Delete physical files
         documents_dir = Path(settings.UPLOAD_DIR)
         files_deleted = 0
         if documents_dir.exists():

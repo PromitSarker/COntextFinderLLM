@@ -140,3 +140,30 @@ class GeminiService:
         
         return answer
 
+    async def analyze_webpage_screenshot(self, screenshot_bytes: bytes) -> str:
+        """
+        Sends a screenshot of a webpage to Gemini. 
+        Gemini will transcribe the text and describe images/charts.
+        """
+        prompt = """
+        You are an AI processing a screenshot of a webpage for a search index.
+        
+        TASK:
+        1. Transcribe ALL readable text from this page structure.
+        2. Describe any charts, diagrams, or meaningful images in detail.
+        3. Ignore: Navigation bars, footers, checkout buttons, cookie banners, and ads.
+        4. Organize the output into clear Markdown sections.
+        
+        OUTPUT FORMAT:
+        [Markdown text of the page content]
+        """
+        
+        try:
+            # Gemini 1.5/2.0 accepts image bytes directly
+            response = await self.generation_model.generate_content_async(
+                [prompt, {"mime_type": "image/png", "data": screenshot_bytes}]
+            )
+            return response.text
+        except Exception as e:
+            return f"Error analyzing screenshot: {str(e)}"
+

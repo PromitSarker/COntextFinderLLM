@@ -1,41 +1,77 @@
 import os
 from pathlib import Path
-from app.core.config import settings
+from app.core.config import settings, logger
 
-ALLOWED_EXTENSIONS = {'.pdf', '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp'}
+ALLOWED_EXTENSIONS = {
+    # PDFs
+    ".pdf",
+    # Images
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".tif", ".webp",
+    # Documents
+    ".docx", ".doc", ".txt", ".rtf", ".odt",
+    # Spreadsheets
+    ".xlsx", ".xls", ".csv",
+    # Presentations
+    ".pptx", ".ppt",
+    # Markdown / Web
+    ".md", ".html", ".htm",
+    # JSON / XML
+    ".json", ".xml",
+}
 
-def save_file(file_content: bytes, filename: str) -> str:
-    """Save uploaded file (PDF or image) to static directory"""
-    file_path = Path(settings.UPLOAD_DIR) / filename
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    with open(file_path, "wb") as f:
-        f.write(file_content)
-    
-    # Return relative path for serving
-    return f"static/documents/{filename}"
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".tif", ".webp"}
+PDF_EXTENSIONS = {".pdf"}
+TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".xml", ".html", ".htm", ".rtf"}
+DOCX_EXTENSIONS = {".docx", ".doc", ".odt"}
+XLSX_EXTENSIONS = {".xlsx", ".xls"}
+PPTX_EXTENSIONS = {".pptx", ".ppt"}
 
-def save_pdf(file_content: bytes, filename: str) -> str:
-    """Backward compatibility - saves PDF"""
-    return save_file(file_content, filename)
+
+def get_extension(filename: str) -> str:
+    return Path(filename).suffix.lower()
+
+
+def is_allowed_file(filename: str) -> bool:
+    return get_extension(filename) in ALLOWED_EXTENSIONS
+
+
+def is_image(filename: str) -> bool:
+    return get_extension(filename) in IMAGE_EXTENSIONS
+
+
+def is_pdf(filename: str) -> bool:
+    return get_extension(filename) in PDF_EXTENSIONS
+
+
+def is_text(filename: str) -> bool:
+    return get_extension(filename) in TEXT_EXTENSIONS
+
+
+def is_docx(filename: str) -> bool:
+    return get_extension(filename) in DOCX_EXTENSIONS
+
+
+def is_xlsx(filename: str) -> bool:
+    return get_extension(filename) in XLSX_EXTENSIONS
+
+
+def is_pptx(filename: str) -> bool:
+    return get_extension(filename) in PPTX_EXTENSIONS
+
+
+def save_file(content: bytes, filename: str) -> str:
+    upload_dir = Path(settings.UPLOAD_DIR)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    file_path = upload_dir / filename
+    file_path.write_bytes(content)
+    logger.info(f"Saved file: {file_path}")
+    return str(file_path)
+
 
 def delete_pdf(filename: str) -> bool:
-    """Delete a file from static directory"""
     file_path = Path(settings.UPLOAD_DIR) / filename
     if file_path.exists():
         file_path.unlink()
+        logger.info(f"Deleted file: {file_path}")
         return True
     return False
-
-def is_allowed_file(filename: str) -> bool:
-    """Check if file extension is allowed"""
-    return Path(filename).suffix.lower() in ALLOWED_EXTENSIONS
-
-def is_image(filename: str) -> bool:
-    """Check if file is an image"""
-    image_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp'}
-    return Path(filename).suffix.lower() in image_extensions
-
-def is_pdf(filename: str) -> bool:
-    """Check if file is a PDF"""
-    return Path(filename).suffix.lower() == '.pdf'

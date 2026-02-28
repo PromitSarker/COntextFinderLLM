@@ -2,8 +2,14 @@
 FROM python:3.11-slim
 
 # Install system dependencies
+# Added chromium, chromium-driver, and fonts-liberation for screenshot capability
 RUN apt-get update && apt-get install -y \
     gcc \
+    chromium \
+    chromium-driver \
+    fonts-liberation \
+    libnss3 \
+    libfontconfig1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Set environment variables
