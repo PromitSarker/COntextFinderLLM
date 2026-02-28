@@ -299,9 +299,12 @@ async def query_documents(request: QueryRequest):
         
         normalized_question = request.question
         
+        # Fetch more results than requested since we'll deduplicate to 1 per file
+        fetch_k = max(request.top_k * 5, 20)
+        
         results = await vector_service.query(
             normalized_question, 
-            request.top_k,
+            fetch_k,
             categories=query_categories
         )
         
@@ -309,8 +312,8 @@ async def query_documents(request: QueryRequest):
             cat_msg = f" in categories {query_categories}" if query_categories else ""
             return QueryResponse(results=[], answer=f"No search results found{cat_msg}")
         
-        filtered_results = []
-        seen_contents = []
+        # Track the best (highest similarity) result per source file
+        best_per_file = {}  # filename -> {"score": float, "result": dict}
 
         for idx in range(len(results["ids"][0])):
             metadatas_list = results.get("metadatas", [[]])[0]
@@ -335,42 +338,40 @@ async def query_documents(request: QueryRequest):
             if similarity_score < 0.65:
                 continue
             
+            # Use filename as the dedup key — one result per file
+            file_key = metadata["filename"]
+            
+            # Only process this chunk if it's the best score for this file
+            if file_key in best_per_file and best_per_file[file_key]["score"] >= similarity_score:
+                continue
+            
             cleaned_content = await gemini.clean_extracted_text(content)
 
             if not cleaned_content or not cleaned_content.strip():
                 continue
 
             cleaned_content = " ".join(cleaned_content.split())
-
-            cleaned_lower = cleaned_content.lower()
-            is_duplicate = False
-            for seen in seen_contents:
-                shorter, longer = sorted([cleaned_lower, seen], key=len)
-                if shorter in longer:
-                    is_duplicate = True
-                    break
-                seen_words = set(seen.split())
-                current_words = set(cleaned_lower.split())
-                if len(seen_words) > 0 and len(current_words) > 0:
-                    overlap = len(seen_words & current_words) / min(len(seen_words), len(current_words))
-                    if overlap > 0.85:
-                        is_duplicate = True
-                        break
-            if is_duplicate:
-                continue
-            seen_contents.append(cleaned_lower)
             
             doc_categories = metadata.get("categories", [metadata.get("category", "default")])
             if isinstance(doc_categories, str):
                 doc_categories = [doc_categories]
             
-            filtered_results.append({
-                "content": cleaned_content,
-                "page_number": metadata.get("page_number", 0),
-                "pdf_link": f"{metadata['source']}#page={metadata.get('page_number', 1)}",
-                "filename": metadata["filename"],
-                "categories": doc_categories
-            })
+            best_per_file[file_key] = {
+                "score": similarity_score,
+                "result": {
+                    "content": cleaned_content,
+                    "page_number": metadata.get("page_number", 0),
+                    "pdf_link": f"{metadata['source']}#page={metadata.get('page_number', 1)}",
+                    "filename": metadata["filename"],
+                    "categories": doc_categories
+                }
+            }
+        
+        # Sort by similarity score (best first) and limit to top_k
+        filtered_results = [
+            entry["result"] 
+            for entry in sorted(best_per_file.values(), key=lambda x: x["score"], reverse=True)
+        ][:request.top_k]
         
         if not filtered_results:
             return QueryResponse(results=[], answer="No relevant results found")
