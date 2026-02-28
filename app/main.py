@@ -387,26 +387,30 @@ async def query_documents(request: QueryRequest):
                 continue
             seen_contents.append(cleaned_lower)
             
-            doc_categories = metadata.get("categories", [metadata.get("category", "default")])
+            doc_categories = metadata.get("categories", metadata.get("category", "default"))
             if isinstance(doc_categories, str):
-                doc_categories = [doc_categories]
-            
+                doc_categories = [c.strip() for c in doc_categories.split(",") if c.strip()]
+            if not doc_categories:
+                doc_categories = ["default"]
+
             primary_category = doc_categories[0] if doc_categories else "default"
-            raw_source = metadata["source"]
+            raw_source = metadata.get("source", "")
             if raw_source.startswith("/app/"):
                 url_source = raw_source[len("/app/"):]
             elif raw_source.startswith("/"):
                 url_source = raw_source.lstrip("/")
             else:
                 url_source = raw_source
-
-            # Ensure no leading slash that could cause double-slash
             url_source = url_source.lstrip("/")
+
+            # Fall back to filename if source is missing or malformed
+            if not url_source or "/" not in url_source:
+                url_source = f"static/documents/{Path(metadata['filename']).name}"
 
             filtered_results.append({
                 "content": cleaned_content,
                 "page_number": metadata.get("page_number", 0),
-                "pdf_link": f"static/documents/{Path(metadata['filename']).name}?context={primary_category}#page={metadata.get('page_number', 1)}",
+                "pdf_link": f"{url_source}?context={primary_category}#page={metadata.get('page_number', 1)}",
                 "filename": metadata["filename"],
                 "categories": doc_categories
             })
