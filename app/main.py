@@ -1,7 +1,7 @@
 import re
 import json
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Form, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings, logger
@@ -316,9 +316,10 @@ async def upload_url(
 
 
 @app.post("/query", response_model=QueryResponse)
-async def query_documents(request: QueryRequest):
+async def query_documents(request: QueryRequest, http_request: Request):
     """Query documents with optional multi-category filtering"""
     try:
+        base_url = str(http_request.base_url).rstrip("/")
         gemini = GeminiService()
         
         query_categories = None
@@ -386,9 +387,10 @@ async def query_documents(request: QueryRequest):
 
             primary_category = doc_categories[0] if doc_categories else "default"
 
-            # Web URL content: link directly to the original webpage
+            # Web URL content: link directly to the original webpage with context
             if metadata.get("file_type") == "web_url":
-                pdf_link = metadata.get("original_url") or metadata.get("source", "")
+                original_url = metadata.get("original_url") or metadata.get("source", "")
+                pdf_link = f"{original_url}?context={primary_category}"
             else:
                 raw_source = metadata.get("source", "")
                 if raw_source.startswith("/app/"):
@@ -403,7 +405,7 @@ async def query_documents(request: QueryRequest):
                 if not url_source or "/" not in url_source:
                     url_source = f"static/documents/{Path(metadata['filename']).name}"
 
-                pdf_link = f"{url_source}?context={primary_category}#page={metadata.get('page_number', 1)}"
+                pdf_link = f"{base_url}/{url_source}?context={primary_category}#page={metadata.get('page_number', 1)}"
 
             filtered_results.append({
                 "content": cleaned_content,
