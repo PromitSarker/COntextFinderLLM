@@ -337,7 +337,7 @@ async def query_documents(request: QueryRequest):
             return QueryResponse(results=[], answer=f"No search results found{cat_msg}")
         
         filtered_results = []
-        seen_contents = []
+        seen_filenames = set()
 
         for idx in range(len(results["ids"][0])):
             metadatas_list = results.get("metadatas", [[]])[0]
@@ -355,6 +355,12 @@ async def query_documents(request: QueryRequest):
             
             if not all(k in metadata for k in ["source", "filename"]):
                 continue
+
+            filename = metadata["filename"]
+
+            # Only keep the first (most relevant) chunk per source file
+            if filename in seen_filenames:
+                continue
             
             distance = distances_list[idx] if idx < len(distances_list) else 1.0
             similarity_score = 1 / (1 + distance)
@@ -369,23 +375,7 @@ async def query_documents(request: QueryRequest):
 
             cleaned_content = " ".join(cleaned_content.split())
 
-            cleaned_lower = cleaned_content.lower()
-            is_duplicate = False
-            for seen in seen_contents:
-                shorter, longer = sorted([cleaned_lower, seen], key=len)
-                if shorter in longer:
-                    is_duplicate = True
-                    break
-                seen_words = set(seen.split())
-                current_words = set(cleaned_lower.split())
-                if len(seen_words) > 0 and len(current_words) > 0:
-                    overlap = len(seen_words & current_words) / min(len(seen_words), len(current_words))
-                    if overlap > 0.85:
-                        is_duplicate = True
-                        break
-            if is_duplicate:
-                continue
-            seen_contents.append(cleaned_lower)
+            seen_filenames.add(filename)
             
             doc_categories = metadata.get("categories", metadata.get("category", "default"))
             if isinstance(doc_categories, str):
@@ -418,7 +408,7 @@ async def query_documents(request: QueryRequest):
         if not filtered_results:
             return QueryResponse(results=[], answer="No relevant results found")
         
-        context = "\n\n".join([r['content'] for r in filtered_results[:3]])
+        context = "\n\n".join([r['content'] for r in filtered_results])
         answer = await gemini.answer_question(request.question, context)
         
         if answer == "Not found":

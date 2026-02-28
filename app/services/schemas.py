@@ -59,5 +59,5 @@ class QueryResponse(BaseModel):
 
 class QueryRequest(BaseModel):
     question: str
-    top_k: int = 5
+    top_k: int = 6
     categories: Optional[List[DocumentCategory]] = None
