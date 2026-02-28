@@ -288,7 +288,8 @@ async def upload_url(
                 "content": chunk,
                 "metadata": {
                     "filename": f"URL_{url[:30]}",
-                    "source": url,
+                    "source": f"static/temp/{screenshot_filename}",
+                    "original_url": url,
                     "page_number": 1,
                     "chunk_index": i,
                     "file_type": "web_url",
@@ -384,23 +385,30 @@ async def query_documents(request: QueryRequest):
                 doc_categories = ["default"]
 
             primary_category = doc_categories[0] if doc_categories else "default"
-            raw_source = metadata.get("source", "")
-            if raw_source.startswith("/app/"):
-                url_source = raw_source[len("/app/"):]
-            elif raw_source.startswith("/"):
-                url_source = raw_source.lstrip("/")
-            else:
-                url_source = raw_source
-            url_source = url_source.lstrip("/")
 
-            # Fall back to filename if source is missing or malformed
-            if not url_source or "/" not in url_source:
-                url_source = f"static/documents/{Path(metadata['filename']).name}"
+            # Web URL content: link directly to the original webpage
+            if metadata.get("file_type") == "web_url":
+                pdf_link = metadata.get("original_url") or metadata.get("source", "")
+            else:
+                raw_source = metadata.get("source", "")
+                if raw_source.startswith("/app/"):
+                    url_source = raw_source[len("/app/"):]
+                elif raw_source.startswith("/"):
+                    url_source = raw_source.lstrip("/")
+                else:
+                    url_source = raw_source
+                url_source = url_source.lstrip("/")
+
+                # Fall back to filename if source is missing or malformed
+                if not url_source or "/" not in url_source:
+                    url_source = f"static/documents/{Path(metadata['filename']).name}"
+
+                pdf_link = f"{url_source}?context={primary_category}#page={metadata.get('page_number', 1)}"
 
             filtered_results.append({
                 "content": cleaned_content,
                 "page_number": metadata.get("page_number", 0),
-                "pdf_link": f"{url_source}?context={primary_category}#page={metadata.get('page_number', 1)}",
+                "pdf_link": pdf_link,
                 "filename": metadata["filename"],
                 "categories": doc_categories
             })
