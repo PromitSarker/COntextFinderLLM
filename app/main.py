@@ -385,7 +385,12 @@ async def query_documents(request: QueryRequest, http_request: Request):
             if not doc_categories:
                 doc_categories = ["default"]
 
-            primary_category = doc_categories[0] if doc_categories else "default"
+            # Prefer the query context over stored doc categories so URLs
+            # reflect the context the user is actually browsing.
+            if query_categories:
+                primary_category = query_categories[0]
+            else:
+                primary_category = doc_categories[0] if doc_categories else "default"
 
             # Web URL content: link directly to the original webpage with context
             if metadata.get("file_type") == "web_url":
