@@ -237,13 +237,38 @@ async def upload_files(
 @app.post("/upload/url", response_model=UploadResponse)
 async def upload_url(
     url: str = Query(..., description="Website URL to ingest (e.g., https://example.com)"),
-    category: str = Query(DocumentCategory.DEFAULT.value, description="Category for this content")
+    categories: List[str] = Query([DocumentCategory.DEFAULT.value], description="One or more document categories")
 ):
     """
     Takes a snapshot of a URL, uses AI to extract text/images from the screenshot,
     and indexes it into the search database.
     """
     try:
+        # Normalize categories: handle JSON-encoded strings, comma-separated values, etc.
+        raw_categories = []
+        for cat in categories:
+            if cat.startswith("["):
+                try:
+                    parsed = json.loads(cat)
+                    if isinstance(parsed, list):
+                        raw_categories.extend(str(c) for c in parsed)
+                        continue
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            if "," in cat:
+                raw_categories.extend(c.strip() for c in cat.split(",") if c.strip())
+            else:
+                raw_categories.append(cat.strip())
+
+        valid_category_names = {c.value for c in DocumentCategory}
+        invalid = [c for c in raw_categories if c not in valid_category_names]
+        if invalid:
+            raise HTTPException(
+                400,
+                f"Invalid categories: {invalid}. Valid options: {sorted(valid_category_names)}"
+            )
+
+        category_values = list(set(raw_categories)) if raw_categories else [DocumentCategory.DEFAULT.value]
         # 1. Take Screenshot
         # Ensure temp dir exists
         Path("./static/temp").mkdir(parents=True, exist_ok=True)
@@ -293,7 +318,7 @@ async def upload_url(
                     "page_number": 1,
                     "chunk_index": i,
                     "file_type": "web_url",
-                    "categories": [category]
+                    "categories": category_values
                 }
             })
             
@@ -301,13 +326,13 @@ async def upload_url(
             raise HTTPException(400, "No content extracted from URL")
 
         # 5. Add to Vector DB
-        doc_ids = await vector_service.add_documents(documents, categories=[category])
+        doc_ids = await vector_service.add_documents(documents, categories=category_values)
         
         return UploadResponse(
             document_id=doc_ids[0].split("_")[0] if doc_ids else None,
             filename=url,
             chunks_created=len(documents),
-            categories=[category]
+            categories=category_values
         )
 
     except Exception as e:
