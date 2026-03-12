@@ -93,6 +93,55 @@ class GeminiService:
         
         return cleaned
 
+    async def rewrite_query_for_search(self, question: str) -> str:
+        """
+        Rewrite a raw human-language question into concise, document-friendly
+        search terms that better match technical document vocabulary.
+        Returns the rewritten query string.
+        """
+        prompt = f"""
+        You are a search query optimizer. A user has typed a natural language question.
+        Your job is to rewrite it into short, precise search terms that are likely to
+        appear verbatim or very closely in technical documents, manuals, or reports.
+
+        RULES:
+        - Output ONLY the rewritten search query, nothing else
+        - Use 5–15 words maximum
+        - Drop conversational filler ("how do I", "can you tell me", "I want to know")
+        - Replace everyday words with domain/technical equivalents where possible
+        - Preserve key entities: product names, model numbers, error codes
+        - If the question already looks like a good search query, return it as-is
+
+        Examples:
+        Q: "why does my device keep turning off by itself?"
+        A: unexpected shutdown auto power off troubleshooting
+
+        Q: "what should I do when the red light flashes three times?"
+        A: red LED flashing 3 times error indication fault code
+
+        Q: "how much does the premium plan cost per month?"
+        A: premium plan pricing monthly subscription cost
+
+        Now rewrite this question:
+        Q: "{question}"
+        A:"""
+
+        try:
+            response = await self.generation_model.generate_content_async(
+                prompt,
+                generation_config={
+                    "temperature": 0.0,
+                    "max_output_tokens": 60,
+                }
+            )
+            rewritten = response.text.strip().strip('"').strip("'")
+            # Fallback to original if rewrite is empty or suspiciously long
+            if not rewritten or len(rewritten) > 200:
+                return question
+            return rewritten
+        except Exception:
+            return question
+
     async def answer_question(self, question: str, retrieved_context: str) -> str:
         """
         Answer questions based on retrieved context with search engine flexibility
