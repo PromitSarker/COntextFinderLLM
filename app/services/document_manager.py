@@ -69,3 +69,28 @@ class DocumentManager:
             "file_deleted": file_deleted,
             "filename": actual_filename
         }
+
+    def list_documents(self) -> list:
+        """List all unique documents and their chunk counts"""
+        try:
+            results = self.collection.get(include=["metadatas"])
+            if not results["metadatas"]:
+                return []
+            
+            doc_stats = {}
+            for meta in results["metadatas"]:
+                if not meta: continue
+                fname = meta.get("filename", "unknown")
+                if fname not in doc_stats:
+                    doc_stats[fname] = {
+                        "filename": fname,
+                        "chunk_count": 0,
+                        "categories": meta.get("categories", ["default"]),
+                        "type": meta.get("file_type", "document")
+                    }
+                doc_stats[fname]["chunk_count"] += 1
+            
+            return sorted(list(doc_stats.values()), key=lambda x: x["filename"])
+        except Exception as e:
+            logger.error(f"Failed to list documents: {str(e)}")
+            return []

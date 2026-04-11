@@ -69,6 +69,16 @@ async def list_categories():
         raise HTTPException(500, f"Failed to list categories: {str(e)}")
 
 
+@app.get("/documents")
+async def list_documents():
+    """List all unique documents and their chunk counts"""
+    try:
+        return document_manager.list_documents()
+    except Exception as e:
+        logger.error(f"Failed to list documents: {str(e)}")
+        raise HTTPException(500, f"Failed to list documents: {str(e)}")
+
+
 @app.post(
     "/upload",
     response_model=List[UploadResponse],

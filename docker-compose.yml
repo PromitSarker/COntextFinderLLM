@@ -1,4 +1,4 @@
-version: "3.8"
+
 
 services:
   dilesh:
@@ -15,6 +15,16 @@ services:
       - VECTOR_DB_PATH=/app/chroma_db
       - UPLOAD_DIR=/app/static/documents
     user: "0:0"
+    restart: unless-stopped
+
+  frontend:
+    build: 
+      context: ./frontend
+    container_name: context-finder-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - dilesh
     restart: unless-stopped
 
 volumes:
