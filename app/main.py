@@ -2,6 +2,7 @@ import re
 import json
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Form, Request
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings, logger
@@ -44,6 +45,11 @@ document_manager = DocumentManager()
 
 # Mount static files for PDF access
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent.parent / "static")), name="static")
+
+# Mount frontend build if it exists
+frontend_path = Path(__file__).parent.parent / "frontend" / "dist"
+if frontend_path.exists():
+    app.mount("/ui", StaticFiles(directory=str(frontend_path), html=True), name="ui")
 
 pdf_processor = PDFProcessor()
 image_processor = ImageProcessor()
@@ -563,6 +569,18 @@ async def delete_all_documents():
     except Exception as e:
         logger.error(f"Delete all failed: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Delete all failed: {str(e)}")
+
+
+@app.get("/{full_path:path}")
+async def serve_react_app(full_path: str):
+    """Catch-all route to serve the React SPA"""
+    # If the file exists in the UI directory, it's already handled by the /ui mount
+    # but we want the root / to also serve index.html
+    index_path = Path(__file__).parent.parent / "frontend" / "dist" / "index.html"
+    if index_path.exists():
+        return FileResponse(index_path)
+    
+    return {"message": "API is running. Frontend build not found."}
 
 
 if __name__ == "__main__":

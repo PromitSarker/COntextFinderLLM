@@ -1,0 +1,42 @@
+# --- Stage 1: Build Frontend ---
+FROM node:18-slim AS frontend-build
+WORKDIR /frontend
+COPY frontend/package.json ./
+RUN npm install
+COPY frontend/ ./
+RUN npm run build
+
+# --- Stage 2: Final Monolith Image ---
+FROM python:3.11-slim
+
+# Install system dependencies (for Chromium/URL Ingestion)
+RUN apt-get update && apt-get install -y \
+    gcc \
+    chromium \
+    chromium-driver \
+    fonts-liberation \
+    libnss3 \
+    libfontconfig1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Copy backend requirements and install
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy all project files
+COPY . .
+
+# Copy the frontend build from Stage 1 into the monolith's static path
+COPY --from=frontend-build /frontend/dist /app/frontend/dist
+
+# Expose port 2000
+EXPOSE 2000
+
+# Final startup command
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "2000"]

@@ -4,7 +4,9 @@ import Search from './components/Search';
 import Upload from './components/Upload';
 import FileManagement from './components/FileManagement';
 
-const API_BASE = "http://localhost:2000";
+const API_BASE = window.location.origin === 'http://localhost:5173' 
+  ? "http://localhost:2000" 
+  : window.location.origin;
 
 function App() {
   const [activeTab, setActiveTab] = useState('search');
